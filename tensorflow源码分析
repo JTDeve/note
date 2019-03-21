@@ -1,0 +1,116 @@
+规范：conv_2d这种小写的，带有下划线的，一般就是函数的定义
+-------------
+/python下的__init__.py中把很多的库都import进来了
+-----------
+python的op是怎么定义的，在nn_ops.py中定义，最终会调用C++的op
+----------------
+kernel下有大概300～400个op，可以根据对应的名字进去看看具体的C++实现
+-------------
+tf.Variable分析：
+
+tf.Variable(tf.zeros(1))
+Variable.py中class RefVariable(VariableV1):
+调用到self._init_from_args
+if collections is None:  # 因为w,b默认是variable的类型
+    collections = [ops.GraphKeys.GLOBAL_VARIABLES]
+    self._trainable = trainable是可以训练的变量
+    以后sess.run()的时候会将这些可训练的变量拿去迭代
+定义节点的时候会传入name，其中name_scope函数就会默认第一次variable,
+第二次就会自动variable_1，它是用yield来实现的	
+
+继续跟就会看到variable_v2()----->gen_state_ops.variable_v2()中
+_op_def_lib._apply_op_helper("VariableV2,...")也相当于一个op了
+
+ops.convert_to_tensor()#将结果转换成tensor，以后转换成protobuf传递给master的
+
+总结variable：
+最终会将内容放进collection链表中（相当于全局的graph）
+tf.initialize_all_variables()中会初始化all)variable()，其中会ops.get_collection()全部取出来初始化
+---------------------
+ops.control_dependencies()函数是用来判断依赖用的
+函数定义在ops.py中
+如果是一个变量的节点的话，肯定就是用control_dependencies(None)
+
+_current_control_dependencies
+	把那些依赖加进类似数组中去
+_ControlDependenciesController
+-----------------
+_apply_op_helper详解：（op_def_library.py中定义）
+_op_def_lib._apply_op_helper
+	op_info = self._ops.get(op_type_name, None)#第一步就是根据名字读出一个数据结构
+	#这个数据结构怎么来的呢？有个initopdeflibrary方法：输入输出属性都是什么格式的
+	#比如matmul，可在_apply_op_helper("MatMul")平级的文件中搜到其结构
+
+	ops._get_graph_from_inputs#先找到全局的graph
+
+	将参数keywords字典中的值填充进结构体中来（放在下面这三个内容去）
+    		attrs = {}
+    		inputs = []
+    		input_types = []
+
+	g.create_op()
+--------------------
+main.cc(tensorflow/examples/label_image)中：
+int main()
+{
+	std::unique_ptr<tensorflow::Session> session;//注：tensorflow::Session定义在session.h中
+	...
+	session->Run()//这边的run就是tensorflow::Session类中的Run函数(会是direct_session中的Run吗？)
+}
+
+
+session.h中
+virtual Status Run(const std::vector<std::pair<string, Tensor> >& inputs,
+             const std::vector<string>& output_tensor_names,
+             const std::vector<string>& target_node_names,
+             std::vector<Tensor>* outputs) = 0;
+direct_seeion.cc中(在direct_seeion.h中DirectSession是继承于Session的)
+
+}
+----------------------------
+Status DirectSession::Run(const RunOptions& run_options,
+                          const NamedTensorList& inputs,
+                          const std::vector<string>& output_names,
+                          const std::vector<string>& target_nodes,
+                          std::vector<Tensor>* outputs,
+                          RunMetadata* run_metadata) {
+
+  	...
+	RunInternal()
+            item.executor->RunAsync分布式计算
+		ScheduleReady//调度运行线程池中准备好的所有ops
+		    bind处理函数Process    (搜void ExecutorState::Process)
+			device->Compute同步 or device->ComputeAsync异步
+			//注：暂时都是本地进程，没有分布式呢，分布式还有服务进程！
+                        //注：有个地方可以配置是否是分布式的
+                             见device.h，这里不同的设备对computes的实现不一样,gpu,cpu等
+                             Device::Compute(OpKernel *op_kernel,OpKernelContext* context)
+				op_kernel->Compute(context);
+				    见op_kernel.h  (所有的op都会注册到这个kernel中去，外界会直接调op_kernel到达每个算子)
+                                    virtual void Compute(OpKernelContext* context) = 0;
+                                    到这里直接运行对应的op操作，比如softmax_op算子等
+                                        见softmax_op.cc中
+                                        class SoftmaxOp : public OpKernel {
+                                             void Compute(OpKernelContext* context) override 
+                                             {...}
+                                        }
+			
+	    
+}
+
+-------------------------
+分布式服务进程启动跟踪
+//grpc_tensorflow_server.cc
+int main(int argc,char *argv[]){
+    ....
+    //初始化server对象
+    tensorflow::NewServer(server_def,&server);
+        在初始化server对象的时候，调用了GrpcServer的create函数（见grpc_server_lib.cc）
+    //启动服务start
+    server->Start()
+        启动master service线程
+        启动worker service线程
+    server->Join()
+}
+
+
